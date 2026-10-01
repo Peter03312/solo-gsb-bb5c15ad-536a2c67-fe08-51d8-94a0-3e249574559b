@@ -1,0 +1,17 @@
+{
+  "name": "hearing-revision-console",
+  "version": "1.0.0",
+  "description": "听证会逐字稿网页校订台：提议、复核、冲突检测、不可变版本与异议引用",
+  "type": "commonjs",
+  "main": "src/server.js",
+  "scripts": {
+    "start": "node src/server.js",
+    "init-db": "node src/db.js",
+    "test": "node test/unit.test.js && node test/e2e.test.js"
+  },
+  "license": "MIT",
+  "dependencies": {
+    "better-sqlite3": "^11.10.0",
+    "express": "^4.22.3"
+  }
+}

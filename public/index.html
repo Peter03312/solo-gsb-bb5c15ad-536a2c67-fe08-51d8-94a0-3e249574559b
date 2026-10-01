@@ -1,0 +1,116 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>听证会逐字稿校订台</title>
+  <link rel="stylesheet" href="styles.css" />
+</head>
+<body>
+  <!-- 登录页 -->
+  <div id="login-view" class="login-wrap hidden">
+    <form id="login-form" class="login-card">
+      <h1>听证会逐字稿校订台</h1>
+      <p class="sub">记录员 · 复核员 · 参与者</p>
+      <label>用户名 <input name="username" autocomplete="username" required /></label>
+      <label>密码 <input name="password" type="password" autocomplete="current-password" required /></label>
+      <button type="submit" class="btn primary">登录</button>
+      <p class="hint">
+        演示账户：recorder / recorder123（记录员）、reviewer / reviewer123（复核员）、
+        participant / participant123（参与者）
+      </p>
+      <p id="login-error" class="error-text"></p>
+    </form>
+  </div>
+
+  <!-- 主界面 -->
+  <div id="app-view" class="hidden">
+    <header class="topbar">
+      <div class="brand">
+        <span class="logo">⚖</span>
+        <div>
+          <div class="title" id="doc-title">听证会逐字稿校订台</div>
+          <div class="ver-line" id="ver-line"></div>
+        </div>
+      </div>
+      <div class="user-box">
+        <span id="user-info"></span>
+        <button class="btn ghost" id="logout-btn">退出</button>
+      </div>
+    </header>
+
+    <main class="layout">
+      <!-- 左：正文 -->
+      <section class="paper-col">
+        <div class="paper-toolbar">
+          <div class="view-toggle">
+            <button class="seg-btn active" id="view-base">原文（可选择范围）</button>
+            <button class="seg-btn" id="view-preview">发布预览</button>
+          </div>
+          <div class="toolbar-right">
+            <button class="btn small" id="secret-logs-btn">保密留痕</button>
+            <button class="btn small" id="refresh-btn">刷新</button>
+          </div>
+        </div>
+
+        <!-- 未导入：记录员导入 -->
+        <div id="import-box" class="import-box hidden">
+          <h2>导入逐字稿</h2>
+          <p class="muted">UTF-8 文本。支持行首段号（如 “12. 正文”“12、正文”），无段号的非空行将自动编号。导入即形成不可变的第 1 版。</p>
+          <input id="import-title" placeholder="听证会标题（可选）" />
+          <textarea id="import-text" rows="10" placeholder="1. 现在开庭。&#10;2. 证人陈述……"></textarea>
+          <div class="row">
+            <label class="btn small file-btn">选择 .txt 文件（UTF-8）
+              <input type="file" id="import-file" accept=".txt,text/plain" hidden />
+            </label>
+            <button class="btn primary" id="import-btn">导入并发布初始版本</button>
+          </div>
+          <p id="import-msg" class="error-text"></p>
+        </div>
+
+        <div id="paper" class="paper"></div>
+
+        <!-- 发布条 -->
+        <div id="publish-bar" class="publish-bar hidden">
+          <div id="publish-gate"></div>
+          <div class="publish-row">
+            <div id="stage-summary"></div>
+            <input id="publish-note" placeholder="版本说明（可选），如：第一次修订发布" />
+            <button class="btn primary" id="publish-btn">发布新版本</button>
+          </div>
+        </div>
+      </section>
+
+      <!-- 右：工作面板 -->
+      <aside class="side-col">
+        <nav class="tabs">
+          <button class="tab active" data-tab="proposals">提议 <em id="badge-proposals" class="hidden"></em></button>
+          <button class="tab" data-tab="objections">异议 <em id="badge-objections" class="hidden"></em></button>
+          <button class="tab" data-tab="versions">版本</button>
+        </nav>
+
+        <div class="tab-panel" id="panel-proposals"></div>
+        <div class="tab-panel hidden" id="panel-objections"></div>
+        <div class="tab-panel hidden" id="panel-versions"></div>
+      </aside>
+    </main>
+  </div>
+
+  <!-- 选区工具条 -->
+  <div id="selection-toolbar" class="select-toolbar hidden"></div>
+
+  <!-- 通用弹窗 -->
+  <div id="modal-overlay" class="modal-overlay hidden">
+    <div class="modal" id="modal-box"></div>
+  </div>
+
+  <!-- 版本只读查看器 -->
+  <div id="version-overlay" class="modal-overlay hidden">
+    <div class="modal wide" id="version-box"></div>
+  </div>
+
+  <div id="toast" class="toast hidden"></div>
+
+  <script src="app.js"></script>
+</body>
+</html>

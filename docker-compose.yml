@@ -1,0 +1,39 @@
+# 一键启动：docker compose up -d --build
+# 访问地址：http://localhost:3000
+services:
+  hearing-console:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    image: hearing-revision-console:latest
+    container_name: hearing-revision-console
+    restart: unless-stopped
+    ports:
+      - "${HOST_PORT:-3000}:3000"
+    environment:
+      # 监听地址/端口（容器内一般保持默认）
+      HOST: "0.0.0.0"
+      PORT: "3000"
+      # SQLite 数据文件目录（容器内路径；已声明为卷）
+      DATA_DIR: "/data"
+      # 会话有效期（毫秒，默认 12 小时）
+      SESSION_TTL_MS: "${SESSION_TTL_MS:-43200000}"
+      # 首次初始化种子账户（仅在用户表为空时生效；请在生产环境修改）
+      SEED_RECORDIST_USER: "${SEED_RECORDIST_USER:-recorder}"
+      SEED_RECORDIST_PASS: "${SEED_RECORDIST_PASS:-recorder123}"
+      SEED_REVIEWER_USER: "${SEED_REVIEWER_USER:-reviewer}"
+      SEED_REVIEWER_PASS: "${SEED_REVIEWER_PASS:-reviewer123}"
+      SEED_PARTICIPANT_USER: "${SEED_PARTICIPANT_USER:-participant}"
+      SEED_PARTICIPANT_PASS: "${SEED_PARTICIPANT_PASS:-participant123}"
+    volumes:
+      - hearing-data:/data
+    healthcheck:
+      test: ["CMD", "node", "-e", "fetch('http://127.0.0.1:3000/api/me').then(r=>process.exit(r.ok?0:1)).catch(()=>process.exit(1))"]
+      interval: 15s
+      timeout: 5s
+      retries: 5
+      start_period: 10s
+
+volumes:
+  hearing-data:
+    name: hearing-revision-data
