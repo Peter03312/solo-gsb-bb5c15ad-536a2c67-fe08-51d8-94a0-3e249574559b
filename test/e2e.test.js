@@ -806,6 +806,111 @@ async function main() {
   ok(d1 && d1.previous_state === 'secret' && d1.new_state === 'public',
     '解除保密留痕完整（secret → public，含操作人与时间）');
 
+  console.log('\n[片段来源：初始导入与逐版本重放]');
+  // v1 第2段：整段来自初始导入，区间铺满全段
+  const v1seg2text = (await req('GET', '/api/versions/1', null, rec)).json.segments.find((s) => s.seg === 2).text;
+  let prov = await req('GET', '/api/versions/1/segments/2/provenance', null, par);
+  ok(prov.status === 200 && prov.json.fragments.length === 1 &&
+     prov.json.fragments[0].start === 0 && prov.json.fragments[0].end === Array.from(v1seg2text).length &&
+     prov.json.fragments[0].text === v1seg2text && prov.json.fragments[0].source.type === 'import',
+    'v1 第2段：整段来源为“初始导入”，区间铺满全段');
+
+  // v2 第2段：P1（id1）把“2024年3月1日”替换为“2024年3月2日”（等长，位置 iDate）
+  prov = await req('GET', '/api/versions/2/segments/2/provenance', null, rec);
+  const fV2 = prov.json.fragments;
+  const midV2 = fV2.find((f) => f.source.type === 'proposal');
+  ok(fV2.length === 3 && midV2 && midV2.text === '2024年3月2日' &&
+     midV2.source.proposalId === id1 && midV2.source.versionId === 2 &&
+     midV2.start === iDate && midV2.end === iDate + 9,
+    `v2 第2段：替换片段归提议 #${id1}（随 v2 发布），区间与原文位置一致`);
+  ok(fV2[0].source.type === 'import' && fV2[2].source.type === 'import' &&
+     fV2[0].end === midV2.start && fV2[2].start === midV2.end,
+    'v2 第2段：未被触及的文字保留“初始导入”来源');
+
+  // v3 第2段：p5 把该日期改写为“3月上旬”（4 字符）——来源归最后写入者
+  prov = await req('GET', '/api/versions/3/segments/2/provenance', null, rec);
+  const midV3 = prov.json.fragments.find((f) => f.source.type === 'proposal');
+  ok(midV3 && midV3.text === '3月上旬' && midV3.source.proposalId === p5.json.id &&
+     midV3.source.versionId === 3 && midV3.start === iDate && midV3.end === iDate + 4,
+    `v3 第2段：再次改写的片段归最后写入的提议 #${p5.json.id}（随 v3 发布）`);
+
+  // 零长度纯插入：v15 第4段的“【注】”归插入提议 rPin；v16 再插入“：”后两者来源并存
+  prov = await req('GET', '/api/versions/15/segments/4/provenance', null, rec);
+  const fNote = prov.json.fragments.find((f) => f.text === '【注】');
+  ok(fNote && fNote.source.proposalId === rPin.json.id && fNote.source.versionId === 15,
+    'v15 第4段：纯插入文字“【注】”归本次插入提议');
+  prov = await req('GET', '/api/versions/16/segments/4/provenance', null, rec);
+  const fColon = prov.json.fragments.find((f) => f.text === '：');
+  ok(fColon && fColon.source.proposalId === rPinEnd.json.id && fColon.source.versionId === 16,
+    'v16 第4段：后一版插入的“：”归后一版提议');
+  ok(prov.json.fragments.some((f) => f.text === '【注】' && f.source.proposalId === rPin.json.id &&
+     f.source.versionId === 15),
+    'v16 第4段：前一版插入的片段来源保留（未被触及）');
+
+  console.log('\n[片段来源：同版相邻边界、删除与历史不可变]');
+  booth = (await req('GET', '/api/booth', null, rec)).json;
+  // 第1段无锚定异议，发布门槛不受影响；[0,2)→“壹”与 [2,4)→删除 两个相邻提议同版发布
+  const pa1 = await req('POST', '/api/proposals',
+    { seg: 1, start: 0, end: 2, replacement: '壹', basis: '相邻边界甲' }, rec);
+  assert.strictEqual(pa1.status, 201);
+  const pa2 = await req('POST', '/api/proposals',
+    { seg: 1, start: 2, end: 4, replacement: '', basis: '相邻边界乙（纯删除）' }, rec);
+  assert.strictEqual(pa2.status, 201);
+  await req('POST', `/api/proposals/${pa1.json.id}/adopt`, {}, rev);
+  await req('POST', `/api/proposals/${pa2.json.id}/adopt`, {}, rev);
+  const pubAdj = await req('POST', '/api/publish', { note: '相邻边界与删除' }, rev);
+  assert.strictEqual(pubAdj.status, 201);
+  const vAdj = pubAdj.json.versionId;
+  prov = await req('GET', `/api/versions/${vAdj}/segments/1/provenance`, null, rec);
+  const fAdj = prov.json.fragments;
+  ok(fAdj[0].text === '壹' && fAdj[0].start === 0 && fAdj[0].end === 1 &&
+     fAdj[0].source.proposalId === pa1.json.id && fAdj[0].source.versionId === vAdj,
+    '同版相邻修订：前一提议的替换文字归前一提议');
+  ok(fAdj[1].start === 1 && fAdj[1].source.type === 'import' && fAdj[1].text.startsWith('第'),
+    '同版相邻修订：删除文字不占结果，后续文字位置前移且保留原来源');
+  ok(!fAdj.some((f) => f.source.proposalId === pa2.json.id), '纯删除提议不产生任何片段');
+  const fTing = fAdj.find((f) => f.text === '庭审继续进行');
+  ok(fTing && fTing.source.proposalId === p10.json.id && fTing.source.versionId === 7,
+    '更早版本（v7）写入的片段来源在后续版本中保留');
+  ok(fAdj.every((f, i) => i === 0 || f.start === fAdj[i - 1].end) &&
+     fAdj[fAdj.length - 1].end === Array.from(prov.json.text).length,
+    '片段区间无缝铺满全段（码点半开区间）');
+
+  // 历史版本来源不随后续发布改变：v2 第2段来源视图与发布 v18 前一致
+  const provV2again = (await req('GET', '/api/versions/2/segments/2/provenance', null, rec)).json;
+  ok(JSON.stringify(provV2again.fragments) === JSON.stringify(fV2),
+    '历史版本 v2 的片段来源不随后续发布改变');
+
+  console.log('\n[片段来源：明确拒绝]');
+  await expectFail(req('GET', '/api/versions/1/segments/2/provenance'), 401, '未登录', '未登录查看片段来源');
+  await expectFail(req('GET', '/api/versions/999/segments/1/provenance', null, rec), 404, '不存在', '未知版本查看来源');
+  await expectFail(req('GET', '/api/versions/1/segments/999/provenance', null, rec), 404, '未知段号', '未知段号查看来源');
+
+  console.log('\n[片段来源：保密段占位与解除恢复]');
+  await req('POST', '/api/segments/1/secret', {}, rev);
+  // 参与者对当前保密段在所有版本（当前 v18 与历史 v3）只见占位
+  for (const vid of [vAdj, 3]) {
+    prov = await req('GET', `/api/versions/${vid}/segments/1/provenance`, null, par);
+    ok(prov.status === 200 && prov.json.secret === true && prov.json.text === '该段已按段号保密' &&
+       Array.isArray(prov.json.fragments) && prov.json.fragments.length === 0,
+      `参与者查看 v${vid} 保密段：只见占位，无片段`);
+    ok(!JSON.stringify(prov.json).includes('proposalId'), `参与者查看 v${vid} 保密段：响应不含提议编号或来源`);
+  }
+  // 非保密段参与者仍可查看来源（含已发布提议编号）
+  prov = await req('GET', `/api/versions/${vAdj}/segments/2/provenance`, null, par);
+  ok(prov.json.secret !== true && prov.json.fragments.some((f) => f.source.type === 'proposal'),
+    '参与者对非保密段可查看片段来源');
+  // 工作人员不受保密影响
+  prov = await req('GET', `/api/versions/${vAdj}/segments/1/provenance`, null, rev);
+  ok(prov.json.secret !== true && prov.json.fragments.length > 0 &&
+     prov.json.fragments.some((f) => f.source.proposalId === pa1.json.id),
+    '复核员仍可查看保密段的片段来源');
+  // 解除保密后按现有权限恢复
+  await req('POST', '/api/segments/1/unsecret', {}, rev);
+  prov = await req('GET', `/api/versions/${vAdj}/segments/1/provenance`, null, par);
+  ok(prov.json.secret !== true && prov.json.fragments.some((f) => f.source.proposalId === pa1.json.id),
+    '解除保密后参与者恢复查看片段来源（含提议编号）');
+
   console.log(`\n全部通过：${passed} 项断言 ✅`);
   process.exit(0);
 }

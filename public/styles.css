@@ -222,6 +222,46 @@ body {
 .btn.tiny { padding: 1px 8px; font-size: 12px; }
 .secret-log-list { max-height: 52vh; overflow-y: auto; }
 
+/* ---------- 片段来源 ---------- */
+.prov-toggle { margin-left: 8px; vertical-align: middle; }
+.prov-text {
+  background: #f6f5ee;
+  border: 1px solid var(--line);
+  border-radius: 6px;
+  padding: 10px 14px;
+  font-size: 16px;
+  line-height: 2.2;
+  word-break: break-all;
+  margin-bottom: 12px;
+}
+.prov-frag { border-bottom: 3px solid transparent; border-radius: 2px; padding: 1px 0; }
+.prov-frag.prov-c0 { background: #eef4df; border-bottom-color: #93a86f; }
+.prov-frag.prov-c1 { background: #dce8f2; border-bottom-color: #7a9ebd; }
+.prov-frag.prov-c2 { background: #f4ead2; border-bottom-color: #c39b4d; }
+.prov-frag.prov-c3 { background: #fbe3de; border-bottom-color: #cf7f72; }
+.prov-frag.prov-c4 { background: #e9e2f2; border-bottom-color: #9a8bbd; }
+.prov-frag.prov-c5 { background: #dff0ea; border-bottom-color: #6ba58f; }
+.prov-list { display: flex; flex-direction: column; max-height: 42vh; overflow-y: auto; }
+.prov-item {
+  display: flex;
+  align-items: baseline;
+  gap: 10px;
+  font-size: 13px;
+  padding: 5px 0;
+  border-bottom: 1px dotted var(--line);
+}
+.prov-item:last-child { border-bottom: none; }
+.prov-chip { width: 12px; height: 12px; border-radius: 3px; flex: none; align-self: center; }
+.prov-chip.prov-c0 { background: #93a86f; }
+.prov-chip.prov-c1 { background: #7a9ebd; }
+.prov-chip.prov-c2 { background: #c39b4d; }
+.prov-chip.prov-c3 { background: #cf7f72; }
+.prov-chip.prov-c4 { background: #9a8bbd; }
+.prov-chip.prov-c5 { background: #6ba58f; }
+.prov-range { color: var(--muted); white-space: nowrap; }
+.prov-fragtext { flex: 1; word-break: break-all; }
+.prov-src { white-space: nowrap; color: var(--primary-dark); font-weight: 700; }
+
 /* 标记 */
 .mk { border-radius: 2px; padding: 0 1px; cursor: pointer; border-bottom: 2px solid transparent; }
 .mk-adopted { background: var(--adopt-bg); border-bottom-color: var(--adopt-border); }

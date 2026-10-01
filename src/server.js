@@ -144,6 +144,11 @@ app.get('/api/versions/:id', requireAuth, wrap((req, res) => {
   res.json(store.versionView(db, parseInt(req.params.id, 10), req.user));
 }));
 
+// ---------- 片段来源（按段查看任一已发布版本正文连续片段的来源） ----------
+app.get('/api/versions/:id/segments/:seg/provenance', requireAuth, wrap((req, res) => {
+  res.json(store.segmentProvenance(db, parseInt(req.params.id, 10), parseInt(req.params.seg, 10), req.user));
+}));
+
 // ---------- 静态前端 ----------
 app.use(express.static(path.join(__dirname, '..', 'public')));
 

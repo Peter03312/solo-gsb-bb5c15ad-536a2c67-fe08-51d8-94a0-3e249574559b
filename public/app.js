@@ -242,6 +242,16 @@ function renderPaper() {
         tag.textContent = '🔒 保密段（工作人员可见）';
         body.appendChild(tag);
       }
+      // 任何登录用户都可查看本段在当前已发布版本中的片段来源（保密段对参与者只渲染占位，无此入口）
+      if (viewMode === 'base') {
+        const pb = document.createElement('button');
+        pb.className = 'btn tiny prov-toggle';
+        pb.textContent = '来源';
+        pb.title = '查看本段在当前已发布版本中各连续片段的来源（初始导入，或最后写入它的已发布提议与发布版本）';
+        pb.addEventListener('mousedown', (e) => e.preventDefault());
+        pb.addEventListener('click', () => openProvenance(booth.currentVersion.id, seg.seg, false));
+        body.appendChild(pb);
+      }
     }
     row.appendChild(no);
     row.appendChild(body);
@@ -854,7 +864,7 @@ async function openVersion(id) {
               <div class="seg-no${s.secret ? ' seg-no-secret' : ''}">${s.seg}</div>
               <div class="seg-body">${s.secret
                 ? `<span class="secret-placeholder">🔒 ${esc(s.text)}</span>`
-                : esc(s.text)}</div>
+                : `${esc(s.text)}<button class="btn tiny prov-toggle" data-prov="${s.seg}">来源</button>`}</div>
             </div>`).join('')}
         </div>
       </div>
@@ -890,6 +900,54 @@ async function openVersion(id) {
             <div class="card-meta">${esc(r.responder_name)}（${esc(r.responder_user)}）· 回应于 v${r.version_id} · ${r.created_at} UTC · 随 v${r.published_version_id} 发布（只读归档）</div>
           </div>`).join('') : '<p class="muted">本版本无发布前异议回应（发布未触及异议，或按原规则发布）。</p>'}
       </div>`, true);
+    $$('#version-box [data-prov]').forEach((b) =>
+      b.addEventListener('click', () => openProvenance(v.id, parseInt(b.dataset.prov, 10), true)));
+  } catch (err) { toast(err.message, 'error'); }
+}
+
+// ---------- 片段来源 ----------
+const PROV_COLORS = 6;
+function provSourceLabel(f) {
+  return f.source.type === 'import'
+    ? '初始导入'
+    : `提议 #${f.source.proposalId} · 随 v${f.source.versionId} 发布`;
+}
+
+async function openProvenance(versionId, seg, fromVersionView) {
+  try {
+    const d = await api(`/api/versions/${versionId}/segments/${seg}/provenance`);
+    if (d.secret) {
+      // 参与者视角的保密段：只见占位，不获得片段、提议编号或来源
+      openModal(`
+        <h3>片段来源 · v${d.versionId} 第 ${d.seg} 段</h3>
+        <p><span class="secret-placeholder">🔒 ${esc(d.text)}</span></p>
+        <p class="muted">该段已按段号保密：参与者不可查看该段的片段、提议编号或来源；解除保密后按现有权限恢复。</p>
+        <div class="actions"><button class="btn" data-close>关闭</button></div>`, true);
+      return;
+    }
+    const frags = d.fragments || [];
+    openModal(`
+      <h3>片段来源 · v${d.versionId} 第 ${d.seg} 段</h3>
+      <p class="muted">沿逐次发布的修订重放：未被触及的文字保留原来源；替换或插入文字归最后写入它的已发布提议；
+        被删除的文字不占结果。范围为该版 Unicode 码点半开区间 [start, end)。</p>
+      ${frags.length ? `
+      <div class="prov-text">${frags.map((f, i) =>
+        `<span class="prov-frag prov-c${i % PROV_COLORS}">${esc(f.text)}</span>`).join('')}</div>
+      <div class="prov-list">${frags.map((f, i) => `
+        <div class="prov-item">
+          <span class="prov-chip prov-c${i % PROV_COLORS}"></span>
+          <span class="prov-range">[${f.start}, ${f.end})</span>
+          <span class="prov-fragtext">${esc(f.text)}</span>
+          <span class="prov-src">${provSourceLabel(f)}</span>
+        </div>`).join('')}</div>`
+      : '<p class="muted">（本段为空，无任何片段）</p>'}
+      <div class="actions">
+        ${fromVersionView ? '<button class="btn" id="prov-back">← 返回版本视图</button>' : ''}
+        <button class="btn" data-close>关闭</button>
+      </div>`, true);
+    if (fromVersionView) {
+      $('#prov-back').addEventListener('click', () => openVersion(versionId));
+    }
   } catch (err) { toast(err.message, 'error'); }
 }
 

@@ -1,8 +1,8 @@
 'use strict';
-// 纯文本算子单元测试（码点偏移、合版、引用映射、续提换算）
+// 纯文本算子单元测试（码点偏移、合版、引用映射、续提换算、片段来源重放）
 const assert = require('assert');
-const { codeLength, sliceCP, validateRange, applyEdits, transformRange, transformRangeRebase, editTouchesAnchor } = require('../src/text');
-const { parseTranscript } = require('../src/store');
+const { codeLength, sliceCP, validateRange, applyEdits, transformRange, transformRangeRebase, editTouchesAnchor, replayProvenance } = require('../src/text');
+const { parseTranscript, segmentProvenance } = require('../src/store');
 
 let n = 0;
 const ok = (c, m) => { assert(c, m); n++; console.log('  ✓', m); };
@@ -93,5 +93,69 @@ ok(editTouchesAnchor({ start: 5, end: 5 }, { start: 2, end: 8 }) === true, '门�
 ok(editTouchesAnchor({ start: 2, end: 2 }, { start: 2, end: 8 }) === true, '门槛：插入点恰在引用起点算触及');
 ok(editTouchesAnchor({ start: 8, end: 8 }, { start: 2, end: 8 }) === false, '门槛：插入点恰在引用终点不算触及');
 ok(editTouchesAnchor({ start: 9, end: 9 }, { start: 2, end: 8 }) === false, '门槛：插入点在引用范围外不算触及');
+
+// ---------- 片段来源重放（replayProvenance） ----------
+const IMP = { type: 'import' };
+const PROP = (proposalId, versionId) => ({ type: 'proposal', proposalId, versionId });
+const sig = (spans) => spans.map((s) => `${s.start},${s.end},${s.source.type === 'import' ? 'imp' : `p${s.source.proposalId}@v${s.source.versionId}`}`).join('|');
+
+// 初始导入：整段一个片段
+let pv = replayProvenance(5, []);
+ok(sig(pv) === '0,5,imp', '来源：未发布任何修订时整段归初始导入');
+
+// 空段初始导入：无任何片段
+pv = replayProvenance(0, []);
+ok(pv.length === 0, '来源：空段初始导入无片段');
+
+// 单次替换：[1,3) → 3 字符，前后旧文字保留来源（段长 5 → 6）
+pv = replayProvenance(5, [{ versionId: 2, edits: [{ start: 1, end: 3, replaceLen: 3, proposalId: 7 }] }]);
+ok(sig(pv) === '0,1,imp|1,4,p7@v2|4,6,imp', '来源：替换文字归本次提议，未触及文字保留初始导入');
+
+// 纯删除：删除文字不占结果，两侧同来源文字重新相接并合并
+pv = replayProvenance(5, [{ versionId: 2, edits: [{ start: 2, end: 3, replaceLen: 0, proposalId: 7 }] }]);
+ok(sig(pv) === '0,4,imp', '来源：删除文字不占结果，相邻同来源片段合并');
+
+// 纯插入（零长度选区）：插入文字归本次提议
+pv = replayProvenance(2, [{ versionId: 2, edits: [{ start: 1, end: 1, replaceLen: 2, proposalId: 9 }] }]);
+ok(sig(pv) === '0,1,imp|1,3,p9@v2|3,4,imp', '来源：零长度插入的文字归本次提议');
+
+// 同版多处修订 + 相邻边界：[0,2) 与 [2,4) 相接，分别归各自提议，互不串扰
+pv = replayProvenance(4, [{
+  versionId: 2,
+  edits: [
+    { start: 0, end: 2, replaceLen: 2, proposalId: 1 },
+    { start: 2, end: 4, replaceLen: 3, proposalId: 2 },
+  ],
+}]);
+ok(sig(pv) === '0,2,p1@v2|2,5,p2@v2', '来源：同版相邻边界修订各归各的提议');
+
+// 逐版本重放：后续版本再次改写先前提议写入的文字，来源归最后写入者
+pv = replayProvenance(5, [
+  { versionId: 2, edits: [{ start: 1, end: 3, replaceLen: 3, proposalId: 1 }] },
+  { versionId: 3, edits: [{ start: 2, end: 5, replaceLen: 1, proposalId: 2 }] },
+]);
+ok(sig(pv) === '0,1,imp|1,2,p1@v2|2,3,p2@v3|3,4,imp',
+  '来源：后续版本再次改写时，被覆盖部分归最后写入的提议，未覆盖部分保留原来源');
+
+// 不按同文搜索猜测：替换文字与原文相同也按几何坐标归属（'AAAA' 中 [0,2)→'AA'）
+pv = replayProvenance(4, [{ versionId: 2, edits: [{ start: 0, end: 2, replaceLen: 2, proposalId: 5 }] }]);
+ok(sig(pv) === '0,2,p5@v2|2,4,imp', '来源：同文替换仍按坐标归属，不按文字内容猜测');
+
+// 同位置多个纯插入：与合版顺序一致（后提交者的文字排在前面）
+pv = replayProvenance(2, [{
+  versionId: 2,
+  edits: [
+    { start: 1, end: 1, replaceLen: 1, proposalId: 3 },
+    { start: 1, end: 1, replaceLen: 1, proposalId: 5 },
+  ],
+}]);
+ok(sig(pv) === '0,1,imp|1,2,p5@v2|2,3,p3@v2|3,4,imp', '来源：同位置纯插入按合版顺序排列');
+
+// 未导入时明确拒绝（不生成虚构来源）
+assert.throws(
+  () => segmentProvenance({ prepare: () => ({ get: () => undefined }) }, 1, 1, { role: 'reviewer' }),
+  /尚未导入/,
+  '来源：未导入逐字稿时明确拒绝'
+);
 
 console.log(`\n单元测试全部通过：${n} 项 ✅`);

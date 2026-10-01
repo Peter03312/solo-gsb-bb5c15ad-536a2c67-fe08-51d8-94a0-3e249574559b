@@ -6,6 +6,8 @@
 参与者可对原文范围留下异议引用，修订使被引文字消失时保留原文快照并提示重新定位。
 **复核员还可按段号把段落设为保密或解除保密**：保密立即作用于当前及全部历史版本的参与者视图，
 已发布版本、提议、异议与回应的原始记录均不改写（工作人员视图不受影响）。
+**已登录用户可按段查看当前或任一历史发布版本正文连续片段的来源**：初始导入，或最后写入该片段的
+已发布提议编号与发布版本；来源沿逐次发布的修订按码点坐标几何重放，不按同文搜索猜测。
 
 技术栈：Node.js（Express）+ SQLite（better-sqlite3）+ 无构建浏览器原生前端。
 
@@ -141,7 +143,7 @@ npm test
      **“待重新定位”**警示，原文快照继续保留；可由提出者或复核员在当前版本上手动重新定位并留痕。
 7. **版本查看**：“版本”面板可只读查看任一历史版本的**正文、决议（采纳/驳回/冲突/续提/发布留痕）、
    异议与发布前异议回应**；历史版本内容不随后续发布改变。
-8. **段级保密（复核员，本轮新增）**：复核员在正文段尾点击“设为保密/解除保密”（或调用 HTTP API），
+8. **段级保密（复核员）**：复核员在正文段尾点击“设为保密/解除保密”（或调用 HTTP API），
    也可在工具栏“保密留痕”中查看全部变更。
    - **保密以段号为准**：段号在各版本间不变（发布只改段内正文），一次设置**立即作用于当前及全部历史版本**的
      参与者视图；**不改写**任何已发布版本、提议、异议、回应与决议原始记录——工作人员（记录员/复核员）始终看到全部内容。
@@ -154,6 +156,16 @@ npm test
    - **解除保密后**参与者重新可见该段正文与相关记录；保密/解除均在数据库事务中执行，
      留痕**操作人、时间与前后状态**（`public → secret` / `secret → public`）。
    - 失败均明确拒绝且不改变状态：未知段号 → 404；重复保密/对未保密段解除 → 409；非复核员操作 → 403。
+9. **片段来源（本轮新增）**：任何登录用户在阅读当前或任一历史发布版本时，可点击段尾“来源”按钮
+   （或调用 `GET /api/versions/:id/segments/:seg/provenance`）按段查看正文连续片段的来源。
+   - 结果给出该版 **Unicode 码点半开区间**、片段文字及来源：`初始导入`，或最后写入该片段的
+     **已发布提议编号与发布版本**；相邻同来源片段自动合并，区间无缝铺满全段。
+   - 来源沿**逐次发布的修订**按纯几何坐标**重放**：未被触及的文字保留原来源；替换或插入文字归
+     本次发布的提议；**删除文字不占结果**；同版多处修订、相邻边界及后续再次改写均按坐标归属，
+     **不按同文搜索猜测**（即使新文字与旧文字相同）。
+   - **参与者对当前保密段在所有版本只见占位**：不获得片段、提议编号或来源；解除保密后按现有权限恢复。
+     工作人员（记录员/复核员）视图不受保密影响。
+   - 未导入逐字稿 → 409；未知版本 → 404；未知段号 → 404；未登录 → 401；均不生成虚构来源。
 
 所有失败场景（无权操作、非法字符范围、重复发布、重复导入、重复采纳/重定位等）均返回明确的
 HTTP 状态码与中文原因，且在数据库事务中执行——失败即回滚，不改变任何状态。
@@ -189,6 +201,7 @@ HTTP 状态码与中文原因，且在数据库事务中执行——失败即回
 | `POST /api/segments/:seg/unsecret` | 复核员 | **解除保密**。未知段号 404、该段未保密时 409；解除后参与者重新可见 |
 | `GET /api/secret-logs` | 复核员 | 保密变更留痕列表（段号、动作、前后状态、操作人、时间） |
 | `GET /api/versions/:id` | 登录用户 | 只读查看不可变版本（正文/决议/异议/发布前异议回应）；参与者视角下保密段仅返回占位且按段过滤决议、异议、回应与版本备注 |
+| `GET /api/versions/:id/segments/:seg/provenance` | 登录用户 | **按段查看该版本正文连续片段的来源**：`[{start,end,text,source}]`，source 为 `{type:"import"}` 或 `{type:"proposal",proposalId,versionId}`；参与者对当前保密段只见占位（无片段与来源）；未导入 409、未知版本/段号 404 |
 
 ### 发布前异议回应调用示例（curl）
 
@@ -272,6 +285,45 @@ curl -s -b /tmp/rev.cookie http://localhost:3000/api/secret-logs
 > 设置/解除即时对所有版本生效；`versions.segments_json`、`proposals`、`objections`、
 > `objection_responses` 等原始记录从不被更新，过滤只发生在面向参与者的视图层。
 
+### 片段来源调用示例（curl）
+
+```bash
+# 1) 任意角色登录（此处用参与者），保存会话 Cookie
+curl -i -c /tmp/par.cookie -X POST http://localhost:3000/api/login \
+  -H 'Content-Type: application/json' \
+  -d '{"username":"participant","password":"participant123"}'
+
+# 2) 查看 v3 第 2 段的片段来源：区间为该版码点半开区间，source 标明初始导入或提议/发布版本
+curl -s -b /tmp/par.cookie http://localhost:3000/api/versions/3/segments/2/provenance
+# {
+#   "versionId": 3, "seg": 2,
+#   "text": "申请人张三称：我于3月上旬收到通知。",
+#   "fragments": [
+#     { "start": 0, "end": 9,  "text": "申请人张三称：我于", "source": { "type": "import" } },
+#     { "start": 9, "end": 13, "text": "3月上旬",
+#       "source": { "type": "proposal", "proposalId": 5, "versionId": 3 } },
+#     { "start": 13, "end": 18, "text": "收到通知。",       "source": { "type": "import" } } ] }
+
+# 3) 当前版本同样适用：把 :id 换成当前版本号即可（总览 GET /api/booth 的 currentVersion.id）
+curl -s -b /tmp/par.cookie http://localhost:3000/api/versions/5/segments/4/provenance
+
+# 4) 保密段：参与者只见占位，不获得片段、提议编号或来源；解除保密后恢复
+curl -s -b /tmp/rev.cookie -X POST http://localhost:3000/api/segments/2/secret
+curl -s -b /tmp/par.cookie http://localhost:3000/api/versions/3/segments/2/provenance
+# { "versionId": 3, "seg": 2, "secret": true, "text": "该段已按段号保密", "fragments": [] }
+
+# 5) 失败场景：明确拒绝，不生成虚构来源
+curl -s -b /tmp/par.cookie http://localhost:3000/api/versions/999/segments/2/provenance
+#   404 {"error":"版本 v999 不存在，无法查看片段来源","code":"NOT_FOUND"}
+curl -s -b /tmp/par.cookie http://localhost:3000/api/versions/1/segments/999/provenance
+#   404 {"error":"未知段号：版本 v1 中不存在第 999 段，无法查看片段来源","code":"NOT_FOUND"}
+```
+
+> 重放口径：以 v1 该段全文为起点（全部归“初始导入”），逐版本应用该段已发布提议的
+> 码点坐标修订——未触及文字保留原来源，替换/插入文字归本次提议，删除文字不占结果；
+> 同版多处修订、相邻边界、同文替换与后续再次改写均按坐标归属，不做同文搜索猜测。
+> 来源不另建表：完全由 `versions` 与 `proposals`（已发布提议）的既有记录重放得出。
+
 ---
 
 ## 六、数据模型（SQLite）
@@ -293,6 +345,9 @@ curl -s -b /tmp/rev.cookie http://localhost:3000/api/secret-logs
 - `secret_logs`：**保密/解除保密留痕**。记录段号、动作（`classify`/`declassify`）、操作人、
   时间与前后状态（`previous_state`/`new_state`），不可变追加。保密不更新任何版本与业务记录表，
   对参与者的屏蔽只在视图层按 `segment_secrets` 过滤。
+- **片段来源不建表**：某版本某段的片段来源完全由 `versions`（v1 初始全文）与 `proposals`
+  （`status='published'` 且 `published_version_id <= 目标版本` 的已发布提议）按码点坐标
+  逐版本重放得出；重放结果经“无缝铺满目标段文”一致性自检，不一致时宁可报错也不虚构来源。
 
 ---
 
@@ -309,8 +364,8 @@ curl -s -b /tmp/rev.cookie http://localhost:3000/api/secret-logs
 │   ├── server.js            # Express 路由与错误出口
 │   ├── auth.js              # Cookie 会话与角色鉴权
 │   ├── db.js                # SQLite 连接、建表、种子账户
-│   ├── store.js             # 业务核心：导入/提议/复核/发布/续提/异议/版本视图
-│   └── text.js              # 码点偏移、范围校验、合版、引用映射、续提换算
+│   ├── store.js             # 业务核心：导入/提议/复核/发布/续提/异议/版本视图/片段来源
+│   └── text.js              # 码点偏移、范围校验、合版、引用映射、续提换算、来源重放
 ├── public                   # 浏览器前端（原生 HTML/CSS/JS，无构建步骤）
 │   ├── index.html
 │   ├── styles.css

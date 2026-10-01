@@ -1,6 +1,6 @@
 'use strict';
 // 业务核心：导入、提议、采纳/驳回、冲突标记、发布合版、版本视图、异议引用、基版过期提议的续提
-const { codeLength, sliceCP, validateRange, overlaps, applyEdits, transformRange, transformRangeRebase, editTouchesAnchor } = require('./text');
+const { codeLength, sliceCP, validateRange, overlaps, applyEdits, transformRange, transformRangeRebase, editTouchesAnchor, replayProvenance } = require('./text');
 
 // ---------- 解析 ----------
 // 行首段号格式： 12. 文字 / 12、文字 / 12 制表符或空格 + 文字；单独一行 "12" 视为空文段。
@@ -990,6 +990,85 @@ function versionView(db, id, viewer) {
   };
 }
 
+// ---------- 片段来源（按段查看任一已发布版本正文连续片段的来源） ----------
+// 已登录用户可查看当前或任一历史发布版本中某段的片段来源：初始导入，或最后写入该片段的
+// 已发布提议编号与发布版本。来源沿逐次发布的修订按纯几何坐标重放，不按同文搜索猜测。
+// 参与者对当前保密段在所有版本只见占位：不获得片段、提议编号或来源；解除保密后按现有权限恢复。
+function segmentProvenance(db, versionId, seg, viewer) {
+  if (!getDoc(db)) throw conflict('尚未导入逐字稿，无法查看片段来源', 'NO_DOCUMENT');
+  if (!Number.isInteger(versionId)) throw badRequest('缺少有效的版本号');
+  if (!Number.isInteger(seg)) throw badRequest('缺少有效的段号 seg');
+  const v = db.prepare('SELECT * FROM versions WHERE id=?').get(versionId);
+  if (!v) throw notFound(`版本 v${versionId} 不存在，无法查看片段来源`);
+  const segments = segmentsOf(v);
+  const idx = segIndex(segments, seg);
+  if (idx === -1) {
+    throw notFound(`未知段号：版本 v${versionId} 中不存在第 ${seg} 段，无法查看片段来源`);
+  }
+  // 参与者：当前保密段在所有版本同样只见占位（与正文/版本视图口径一致，过滤只发生在视图层）
+  if (!isStaff(viewer) && isSecretSeg(db, seg)) {
+    return { versionId, seg, secret: true, text: SECRET_PLACEHOLDER, fragments: [] };
+  }
+  const text = segments[idx].text;
+  return { versionId, seg, text, fragments: computeProvenance(db, versionId, seg, text) };
+}
+
+// 纯几何重放：v1 整段归“初始导入”；逐版本应用该段已发布修订——未触及文字保留原来源，
+// 替换/插入文字归本次提议，删除文字不占结果。重放结果必须恰好铺满目标版本段文，
+// 否则宁可报错也不虚构来源。
+function computeProvenance(db, versionId, seg, finalText) {
+  const first = db.prepare('SELECT * FROM versions ORDER BY id ASC LIMIT 1').get();
+  const firstSegs = segmentsOf(first);
+  const i0 = segIndex(firstSegs, seg);
+  if (i0 === -1) {
+    // 段号跨版本不变（发布只改段内正文），目标版本存在的段在初始版本必存在；否则明确拒绝
+    throw notFound(`未知段号：初始版本 v${first.id} 中不存在第 ${seg} 段，无法生成片段来源`);
+  }
+  const rows = db
+    .prepare(
+      `SELECT id, published_version_id AS ver, start_cp, end_cp, replacement
+       FROM proposals
+       WHERE status='published' AND seg=? AND published_version_id IS NOT NULL AND published_version_id <= ?
+       ORDER BY published_version_id, start_cp, id`
+    )
+    .all(seg, versionId);
+  const byVer = new Map();
+  for (const r of rows) {
+    if (!byVer.has(r.ver)) byVer.set(r.ver, []);
+    byVer.get(r.ver).push({
+      start: r.start_cp,
+      end: r.end_cp,
+      replaceLen: codeLength(r.replacement),
+      proposalId: r.id,
+    });
+  }
+  const versionEdits = [...byVer.keys()]
+    .sort((a, b) => a - b)
+    .map((ver) => ({ versionId: ver, edits: byVer.get(ver) }));
+  const spans = replayProvenance(codeLength(firstSegs[i0].text), versionEdits);
+  // 一致性自检：片段必须无缝铺满 [0, 目标版本段长)，任一空隙/重叠都说明数据不一致
+  const total = codeLength(finalText);
+  let pos = 0;
+  for (const sp of spans) {
+    if (sp.start !== pos) {
+      throw new Error(`片段来源重放不一致：v${versionId} 第 ${seg} 段在偏移 ${pos} 处出现空隙或重叠`);
+    }
+    pos = sp.end;
+  }
+  if (pos !== total) {
+    throw new Error(`片段来源重放不一致：v${versionId} 第 ${seg} 段覆盖长度 ${pos} ≠ 实际段长 ${total}`);
+  }
+  return spans.map((sp) => ({
+    start: sp.start,
+    end: sp.end,
+    text: sliceCP(finalText, sp.start, sp.end),
+    source:
+      sp.source.type === 'import'
+        ? { type: 'import' }
+        : { type: 'proposal', proposalId: sp.source.proposalId, versionId: sp.source.versionId },
+  }));
+}
+
 module.exports = {
   parseTranscript,
   importTranscript,
@@ -1014,4 +1093,5 @@ module.exports = {
   getDoc,
   latestVersion,
   segmentsOf,
+  segmentProvenance,
 };
