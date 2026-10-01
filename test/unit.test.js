@@ -1,7 +1,7 @@
 'use strict';
 // 纯文本算子单元测试（码点偏移、合版、引用映射、续提换算）
 const assert = require('assert');
-const { codeLength, sliceCP, validateRange, applyEdits, transformRange, transformRangeRebase, editTouchesAnchor } = require('../src/text');
+const { codeLength, sliceCP, validateRange, applyEdits, transformRange, transformRangeRebase, editTouchesAnchor, replayProvenance } = require('../src/text');
 const { parseTranscript } = require('../src/store');
 
 let n = 0;
@@ -93,5 +93,80 @@ ok(editTouchesAnchor({ start: 5, end: 5 }, { start: 2, end: 8 }) === true, '门�
 ok(editTouchesAnchor({ start: 2, end: 2 }, { start: 2, end: 8 }) === true, '门槛：插入点恰在引用起点算触及');
 ok(editTouchesAnchor({ start: 8, end: 8 }, { start: 2, end: 8 }) === false, '门槛：插入点恰在引用终点不算触及');
 ok(editTouchesAnchor({ start: 9, end: 9 }, { start: 2, end: 8 }) === false, '门槛：插入点在引用范围外不算触及');
+
+// ---------- 正文来源重放（replayProvenance） ----------
+function tagOf(tokens, i) { return tokens[i].tag; }
+// v1 初始：无任何发布步骤 → 全部归初始导入
+let tk = replayProvenance('甲乙丙丁', []);
+ok(tk.map((t) => t.ch).join('') === '甲乙丙丁' && tk.every((t) => t.tag === null),
+  '来源重放：v1 原文全部标记为初始导入');
+
+// 单版多处修订（替换、插入、删除混合）：触及文字归本次提议，未触及保留原来源，删除不占结果
+tk = replayProvenance('甲乙丙丁戊', [
+  { version: 2, edits: [
+    { id: 7, start: 0, end: 1, replace: 'X' },    // 甲 -> X
+    { id: 8, start: 2, end: 3, replace: 'Y' },    // 丙 -> Y
+    { id: 9, start: 4, end: 5, replace: '' },     // 删除戊
+  ] },
+]);
+ok(tk.map((t) => t.ch).join('') === 'X乙Y丁', '来源重放：多修订合版文本与 applyEdits 一致');
+ok(tk[0].tag && tk[0].tag.proposalId === 7 && tk[0].tag.version === 2, '替换文字归提议 #7@v2');
+ok(tagOf(tk, 1) === null, '未触及文字“乙”保留初始导入来源');
+ok(tk[2].tag && tk[2].tag.proposalId === 8, '替换文字归提议 #8');
+ok(tagOf(tk, 3) === null && tk.length === 4, '删除不占结果，后续“丁”仍为初始来源');
+
+// 相邻边界：[0,1) 与 [1,2) 无缝相接，来源各自正确、不串行
+tk = replayProvenance('甲乙丙', [
+  { version: 3, edits: [
+    { id: 1, start: 0, end: 1, replace: 'P' },
+    { id: 2, start: 1, end: 2, replace: 'Q' },
+  ] },
+]);
+ok(tk.map((t) => t.ch).join('') === 'PQ丙', '来源重放：相邻修订合并正确');
+ok(tk[0].tag.proposalId === 1 && tk[1].tag.proposalId === 2 && tagOf(tk, 2) === null,
+  '相邻边界处来源按几何区间归属，不按同文搜索');
+
+// 纯插入（零长度修订）：插入码点归提议，原文字保留
+tk = replayProvenance('甲乙', [
+  { version: 4, edits: [{ id: 3, start: 1, end: 1, replace: '插' }] },
+]);
+ok(tk.map((t) => t.ch).join('') === '甲插乙', '来源重放：零长度插入合版正确');
+ok(tagOf(tk, 0) === null && tk[1].tag.proposalId === 3 && tagOf(tk, 2) === null,
+  '纯插入码点归提议，两侧原文字保留初始来源');
+
+// 后续再次改写：最后写入该片段的提议才是来源；换成相同文字也算重写
+tk = replayProvenance('甲乙丙', [
+  { version: 2, edits: [{ id: 1, start: 0, end: 3, replace: 'XYZ' }] },
+  { version: 3, edits: [{ id: 2, start: 0, end: 3, replace: '甲乙丙' }] }, // 同文重写
+]);
+ok(tk.map((t) => t.ch).join('') === '甲乙丙', '来源重放：同文重写后文本不变');
+ok(tk.every((t) => t.tag && t.tag.proposalId === 2 && t.tag.version === 3),
+  '同文搜索不可猜来源：同文重写后全部归最后写入的提议 #2@v3');
+
+// 后续部分改写：只覆盖其中一段，其余保留上一版提议来源
+tk = replayProvenance('ABC', [
+  { version: 2, edits: [{ id: 1, start: 0, end: 3, replace: 'XYZ' }] },
+  { version: 3, edits: [{ id: 2, start: 1, end: 2, replace: 'Q' }] },
+]);
+ok(tk.map((t) => t.ch).join('') === 'XQZ', '来源重放：再次部分改写合版正确');
+ok(tk[0].tag.proposalId === 1 && tk[1].tag.proposalId === 2 && tk[2].tag.proposalId === 1,
+  '再次改写只改被触及片段，其余来源沿修订历史保留');
+
+// 码点口径：emoji 作为 1 个码点被整段替换
+tk = replayProvenance('a😀b', [
+  { version: 2, edits: [{ id: 5, start: 1, end: 2, replace: '🙂' }] },
+]);
+ok(tk.map((t) => t.ch).join('') === 'a🙂b' && tk[1].tag.proposalId === 5,
+  '来源重放：增补平面字符按 1 码点处理');
+
+// 同点两个零长度插入：与发布合版相同的稳定次序（id 小的先应用，后续应用的同点插入在其左侧）
+tk = replayProvenance('甲乙', [
+  { version: 2, edits: [
+    { id: 1, start: 1, end: 1, replace: 'L' },
+    { id: 2, start: 1, end: 1, replace: 'R' },
+  ] },
+]);
+ok(tk.map((t) => t.ch).join('') === '甲RL乙' && tk[1].tag.proposalId === 2 && tk[2].tag.proposalId === 1,
+  '来源重放：同点零长度插入按合版实际顺序归属（后应用的 #2 文本在左、#1 在右）');
 
 console.log(`\n单元测试全部通过：${n} 项 ✅`);

@@ -1,6 +1,6 @@
 'use strict';
 // 业务核心：导入、提议、采纳/驳回、冲突标记、发布合版、版本视图、异议引用、基版过期提议的续提
-const { codeLength, sliceCP, validateRange, overlaps, applyEdits, transformRange, transformRangeRebase, editTouchesAnchor } = require('./text');
+const { codeLength, sliceCP, validateRange, overlaps, applyEdits, transformRange, transformRangeRebase, editTouchesAnchor, replayProvenance } = require('./text');
 
 // ---------- 解析 ----------
 // 行首段号格式： 12. 文字 / 12、文字 / 12 制表符或空格 + 文字；单独一行 "12" 视为空文段。
@@ -274,8 +274,10 @@ function rejectProposal(db, actor, id, reason) {
 
 // ---------- 暂存预览 ----------
 function stageProposals(db, versionId) {
+  // 显式以 id 作并列次序：合版右起应用时同起点修订（如同点的零长度插入）顺序确定，
+  // 来源重放按同一顺序重放，不依赖底层返回顺序。
   return db
-    .prepare(`SELECT * FROM proposals WHERE status='adopted' AND base_version_id=? ORDER BY seg, start_cp`)
+    .prepare(`SELECT * FROM proposals WHERE status='adopted' AND base_version_id=? ORDER BY seg, start_cp, id`)
     .all(versionId);
 }
 
@@ -990,6 +992,89 @@ function versionView(db, id, viewer) {
   };
 }
 
+// ---------- 正文来源（按段查看某版正文连续片段的来源） ----------
+// 来源沿“初始导入 → 逐次发布”的修订几何重放得到，绝不按同文搜索猜测：
+// 未被触及的码点保留原来源；替换/插入码点归最后写入它的已发布提议（提议编号 + 发布版本）；
+// 删除不占结果。同版多处修订、相邻边界与后续再次改写均由逐码点重放保证正确。
+function sameTag(a, b) {
+  if (a === b) return true; // 均为 null（初始导入）
+  return !!a && !!b && a.proposalId === b.proposalId && a.version === b.version;
+}
+
+function provenanceView(db, versionId, seg, viewer) {
+  if (!getDoc(db)) throw conflict('尚未导入逐字稿，无版本来源可查', 'NO_DOCUMENT');
+  if (!Number.isInteger(versionId) || !Number.isInteger(seg)) throw badRequest('缺少有效的版本号或段号');
+  const v = db.prepare('SELECT * FROM versions WHERE id=?').get(versionId);
+  if (!v) throw notFound(`版本 v${versionId} 不存在，无法查看来源`);
+  const targetSegments = segmentsOf(v);
+  if (segIndex(targetSegments, seg) === -1) {
+    throw notFound(`未知段号：版本 v${versionId} 中不存在第 ${seg} 段，无法查看来源`);
+  }
+  // 保密段：参与者在所有版本只见占位，不获得片段、提议编号或来源；解除保密后按现有权限恢复
+  if (!isStaff(viewer) && isSecretSeg(db, seg)) {
+    throw forbidden(`第 ${seg} 段已保密：参与者不得查看该段正文片段与来源`);
+  }
+
+  // v1 原文（段号跨版本不变，段结构不被修订改写）；逐版收集实际合入该段的已发布提议。
+  const v1 = db.prepare('SELECT * FROM versions WHERE id=1').get();
+  const v1Idx = segIndex(segmentsOf(v1), seg);
+  if (v1Idx === -1) {
+    throw new Error(`PROVENANCE_INCONSISTENT：第 ${seg} 段在初始版本 v1 中不存在（段结构异常）`);
+  }
+  const steps = [];
+  for (let ver = 2; ver <= versionId; ver++) {
+    // 与发布暂存/合版相同的次序（段、起点、id）；published_version_id 即合入版本，
+    // base_version_id 必为 ver-1（版本按 id 顺序发布），坐标即该步的原坐标。
+    const edits = db
+      .prepare(
+        `SELECT id, start_cp, end_cp, replacement FROM proposals
+         WHERE status='published' AND published_version_id=? AND seg=?
+         ORDER BY start_cp, id`
+      )
+      .all(ver, seg)
+      .map((p) => ({ id: p.id, start: p.start_cp, end: p.end_cp, replace: p.replacement }));
+    if (edits.length) steps.push({ version: ver, edits });
+  }
+
+  const initialText = segmentsOf(v1)[v1Idx].text;
+  const tokens = replayProvenance(initialText, steps);
+  // 重放结果必须与该版不可变快照逐码点一致；不一致只可能是数据损坏，明确报错而非编造来源。
+  const replayText = tokens.map((t) => t.ch).join('');
+  const storedText = targetSegments[segIndex(targetSegments, seg)].text;
+  if (replayText !== storedText) {
+    throw Object.assign(
+      new Error(`来源重放与版本 v${versionId} 第 ${seg} 段快照不一致，拒绝输出来源（数据可能已损坏）`),
+      { status: 500, code: 'PROVENANCE_MISMATCH' }
+    );
+  }
+
+  // 相邻同来源码点合并为连续片段；删除不产码点，故不占结果。
+  const runs = [];
+  for (const tok of tokens) {
+    const last = runs[runs.length - 1];
+    if (last && sameTag(last.tag, tok.tag)) last.text += tok.ch;
+    else runs.push({ text: tok.ch, tag: tok.tag });
+  }
+  let pos = 0;
+  const fragments = runs.map((r) => {
+    const start = pos;
+    const end = start + codeLength(r.text);
+    pos = end;
+    return r.tag
+      ? { start, end, text: r.text, source: 'proposal', proposalId: r.tag.proposalId, versionId: r.tag.version }
+      : { start, end, text: r.text, source: 'initial' };
+  });
+
+  return {
+    versionId,
+    seg,
+    secret: false,
+    text: storedText,
+    length: codeLength(storedText),
+    fragments,
+  };
+}
+
 module.exports = {
   parseTranscript,
   importTranscript,
@@ -1005,6 +1090,7 @@ module.exports = {
   publishGate,
   boothView,
   versionView,
+  provenanceView,
   stageProposals,
   previewSegments,
   setSegmentSecret,

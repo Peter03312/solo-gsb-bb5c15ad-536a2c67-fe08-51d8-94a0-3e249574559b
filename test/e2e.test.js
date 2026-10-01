@@ -806,6 +806,134 @@ async function main() {
   ok(d1 && d1.previous_state === 'secret' && d1.new_state === 'public',
     '解除保密留痕完整（secret → public，含操作人与时间）');
 
+  console.log('\n[正文来源：按段查看当前/历史版本连续片段来源]');
+  // 校验片段恰好覆盖全段：区间首尾相接、文字为该段子串且按序拼接还原正文
+  function assertFragmentsCover(json, label) {
+    const text = json.text;
+    const cps = Array.from(text);
+    let expect = 0;
+    for (const f of json.fragments) {
+      ok(f.start === expect && f.end >= f.start, `${label}：片段区间连续相接于 [${f.start},${f.end})`);
+      ok(cps.slice(f.start, f.end).join('') === f.text, `${label}：[${f.start},${f.end}) 片段文字与正文一致`);
+      expect = f.end;
+    }
+    ok(expect === cps.length, `${label}：片段覆盖到段末（${expect}/${cps.length}）`);
+  }
+  function sourceAt(json, pos) {
+    return json.fragments.find((f) => f.start <= pos && pos < f.end);
+  }
+
+  // v1 任一未修改段：全部为初始导入，且无任何提议编号
+  let src = (await req('GET', '/api/versions/1/sources/3', null, par)).json;
+  assertFragmentsCover(src, 'v1 第3段');
+  ok(src.fragments.every((f) => f.source === 'initial'), 'v1 第3段全部来源为初始导入');
+  ok(src.seg === 3 && src.versionId === 1 && src.length === Array.from(src.text).length, '来源响应含版本/段号/码点长度');
+
+  // 未登录拒绝
+  await expectFail(req('GET', '/api/versions/1/sources/1'), 401, '未登录', '未登录查看来源');
+  // 未知版本 / 未知段号明确拒绝，不编造
+  await expectFail(req('GET', '/api/versions/999/sources/1', null, rec), 404, '不存在', '来源未知版本');
+  await expectFail(req('GET', '/api/versions/1/sources/999', null, rec), 404, '未知段号', '来源未知段号');
+
+  // 取当前第5段，做两处相邻但不重叠的同版修订 + 一处纯删除，发布后逐段核对来源
+  booth = (await req('GET', '/api/booth', null, rec)).json;
+  const seg5 = booth.segments.find((s) => s.seg === 5).text;
+  const iWang = cpIndexOf(seg5, '确认第3段发言人');
+  ok(iWang >= 0, `定位第5段“确认第3段发言人”偏移 ${iWang}`);
+  const a1 = await req('POST', '/api/proposals',
+    { seg: 5, start: iWang, end: iWang + 2, replacement: '核明', basis: '来源测试：替换（等长）' }, rec);
+  assert.strictEqual(a1.status, 201);
+  const a2 = await req('POST', '/api/proposals',
+    { seg: 5, start: iWang + 2, end: iWang + 4, replacement: '', basis: '来源测试：删除相邻“第3”两字' }, rec);
+  assert.strictEqual(a2.status, 201);
+  await req('POST', `/api/proposals/${a1.json.id}/adopt`, {}, rev);
+  await req('POST', `/api/proposals/${a2.json.id}/adopt`, {}, rev);
+  await clearGate(rev);
+  const pubA = await req('POST', '/api/publish', { note: '来源测试：同版相邻替换+删除' }, rev);
+  assert.strictEqual(pubA.status, 201, '同版相邻修订发布成功');
+  const verA = pubA.json.versionId;
+
+  src = (await req('GET', `/api/versions/${verA}/sources/5`, null, par)).json;
+  assertFragmentsCover(src, `v${verA} 第5段`);
+  // 拼接文本必须等于该版不可变快照
+  const vAview = (await req('GET', `/api/versions/${verA}`, null, par)).json;
+  const seg5A = vAview.segments.find((s) => s.seg === 5).text;
+  ok(src.fragments.map((f) => f.text).join('') === seg5A, '来源片段拼接还原该版正文');
+  // 替换文字归本次提议；删除区间不产出片段；相邻边界不串行
+  const fWang = sourceAt(src, iWang);
+  ok(fWang && fWang.text === '核明' && fWang.source === 'proposal' && fWang.proposalId === a1.json.id && fWang.versionId === verA,
+    `替换文字“核明”归最后写入提议 #${a1.json.id}@v${verA}`);
+  // 删除区间 [iWang+2,iWang+4) 的原文不占来源结果（该处直接跳到下一片段）
+  const deleted = Array.from(seg5).slice(iWang + 2, iWang + 4).join('');
+  ok(deleted === '第3' && !src.fragments.some((f) => f.start >= iWang && f.start < iWang + 4 && f.text === deleted),
+    `删除文字“${deleted}”不占来源结果`);
+  // 紧邻替换区间之后的原文仍是初始来源（边界相接不混源）
+  const after = src.fragments.find((f) => f.start >= iWang + 2 && f.source === 'initial');
+  ok(!!after, '相邻边界之后未触及文字保留初始导入来源');
+
+  // 再次改写：把“核明”改回与原始相同的“确认”——来源必须是本次提议，不能按同文搜索猜成初始导入
+  const b1 = await req('POST', '/api/proposals',
+    { seg: 5, start: iWang, end: iWang + 2, replacement: '确认', basis: '来源测试：改回原文同文' }, rec);
+  assert.strictEqual(b1.status, 201);
+  await req('POST', `/api/proposals/${b1.json.id}/adopt`, {}, rev);
+  await clearGate(rev);
+  const pubB = await req('POST', '/api/publish', { note: '来源测试：同文再次改写' }, rev);
+  assert.strictEqual(pubB.status, 201);
+  const verB = pubB.json.versionId;
+  src = (await req('GET', `/api/versions/${verB}/sources/5`, null, rec)).json;
+  assertFragmentsCover(src, `v${verB} 第5段`);
+  const fSame = sourceAt(src, iWang);
+  ok(fSame && fSame.text === '确认' && fSame.source === 'proposal' && fSame.proposalId === b1.json.id && fSame.versionId === verB,
+    `同文再次改写：文字虽为“确认”，来源仍是最后写入提议 #${b1.json.id}@v${verB}，不按同文猜测`);
+  // 该位置在 v${verA} 的历史视图中仍归旧提议（历史版本不随后续发布改变）
+  const srcOld = (await req('GET', `/api/versions/${verA}/sources/5`, null, rec)).json;
+  const fOld = sourceAt(srcOld, iWang);
+  ok(fOld && fOld.proposalId === a1.json.id, `历史版本 v${verA} 的来源保持为提议 #${a1.json.id}（不可变）`);
+
+  // 同版两个同点零长度插入：来源次序与合版文本一致（右起稳定次序）
+  const z1 = await req('POST', '/api/proposals',
+    { seg: 5, start: 0, end: 0, replacement: '【左】', basis: '来源测试：同点插入一' }, rec);
+  const z2 = await req('POST', '/api/proposals',
+    { seg: 5, start: 0, end: 0, replacement: '【右】', basis: '来源测试：同点插入二' }, rec);
+  assert.strictEqual(z1.status, 201);
+  assert.strictEqual(z2.status, 201);
+  await req('POST', `/api/proposals/${z1.json.id}/adopt`, {}, rev);
+  await req('POST', `/api/proposals/${z2.json.id}/adopt`, {}, rev);
+  await clearGate(rev);
+  const pubC = await req('POST', '/api/publish', { note: '来源测试：同点插入' }, rev);
+  assert.strictEqual(pubC.status, 201);
+  const verC = pubC.json.versionId;
+  src = (await req('GET', `/api/versions/${verC}/sources/5`, null, rec)).json;
+  assertFragmentsCover(src, `v${verC} 第5段`);
+  const ins = src.fragments.filter((f) => f.source === 'proposal' && f.versionId === verC);
+  ok(ins.length === 2 && ins[0].text === '【右】' && ins[0].proposalId === z2.json.id &&
+     ins[1].text === '【左】' && ins[1].proposalId === z1.json.id,
+     '同点零长度插入：两个插入片段各归其提议，次序与发布合版一致');
+  ok(src.fragments.map((f) => f.text).join('') ===
+     (await req('GET', `/api/versions/${verC}`, null, rec)).json.segments.find((s) => s.seg === 5).text,
+     '同点插入后来源拼接仍与版本快照一致');
+
+  // 历史版本 v1 第5段：全部初始导入（后续发布不改变历史来源结果）
+  const srcV1 = (await req('GET', '/api/versions/1/sources/5', null, par)).json;
+  ok(srcV1.fragments.every((f) => f.source === 'initial'), '参与者查看 v1 第5段来源：全部初始导入');
+
+  console.log('\n[正文来源：保密段参与者在所有版本只见占位，解除后恢复]');
+  await req('POST', '/api/segments/3/secret', {}, rev);
+  // 参与者在当前与历史版本均 403：不获得片段、提议编号或来源
+  for (const vid of [1, verA, verC]) {
+    await expectFail(req('GET', `/api/versions/${vid}/sources/3`, null, par), 403, '保密',
+      `参与者查看 v${vid} 保密段来源被拒绝`);
+  }
+  // 工作人员不受影响：可正常重放
+  const srcStaff = (await req('GET', `/api/versions/${verC}/sources/3`, null, rec)).json;
+  ok(srcStaff.fragments.length >= 1 && srcStaff.text, '工作人员在保密期间仍可查看该段来源');
+  // 解除保密后参与者恢复（按现有权限）
+  await req('POST', '/api/segments/3/unsecret', {}, rev);
+  const srcBack = (await req('GET', `/api/versions/${verC}/sources/3`, null, par)).json;
+  assertFragmentsCover(srcBack, `解除后参与者查看 v${verC} 第3段`);
+  ok(srcBack.fragments.some((f) => f.source === 'proposal'),
+    '解除保密后参与者重新获得该段来源（含历史修订产生的提议来源）');
+
   console.log(`\n全部通过：${passed} 项断言 ✅`);
   process.exit(0);
 }

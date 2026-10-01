@@ -242,6 +242,16 @@ function renderPaper() {
         tag.textContent = '🔒 保密段（工作人员可见）';
         body.appendChild(tag);
       }
+      // 已登录用户按段查看当前已发布版本的正文来源（预览为未发布内容，不提供来源）
+      if (viewMode === 'base') {
+        const srcBtn = document.createElement('button');
+        srcBtn.className = 'btn tiny src-toggle';
+        srcBtn.textContent = '来源';
+        srcBtn.title = '按逐次发布的修订重放：查看该段每个连续片段来自初始导入还是哪条已发布提议';
+        srcBtn.addEventListener('mousedown', (e) => e.preventDefault());
+        srcBtn.addEventListener('click', () => openProvenance(booth.currentVersion.id, seg.seg));
+        body.appendChild(srcBtn);
+      }
     }
     row.appendChild(no);
     row.appendChild(body);
@@ -840,7 +850,12 @@ function renderVersions() {
 async function openVersion(id) {
   try {
     const v = await api(`/api/versions/${id}`);
-    openModal(`
+    showVersionModal(v);
+  } catch (err) { toast(err.message, 'error'); }
+}
+
+function showVersionModal(v) {
+  openModal(`
       <div class="v-head">
         <h3>版本 v${v.id}（不可变快照）</h3>
         <button class="btn small" data-close>关闭</button>
@@ -854,7 +869,7 @@ async function openVersion(id) {
               <div class="seg-no${s.secret ? ' seg-no-secret' : ''}">${s.seg}</div>
               <div class="seg-body">${s.secret
                 ? `<span class="secret-placeholder">🔒 ${esc(s.text)}</span>`
-                : esc(s.text)}</div>
+                : `${esc(s.text)}<button class="btn tiny src-toggle" data-src-ver="${v.id}" data-src-seg="${s.seg}">来源</button>`}</div>
             </div>`).join('')}
         </div>
       </div>
@@ -890,7 +905,49 @@ async function openVersion(id) {
             <div class="card-meta">${esc(r.responder_name)}（${esc(r.responder_user)}）· 回应于 v${r.version_id} · ${r.created_at} UTC · 随 v${r.published_version_id} 发布（只读归档）</div>
           </div>`).join('') : '<p class="muted">本版本无发布前异议回应（发布未触及异议，或按原规则发布）。</p>'}
       </div>`, true);
+  $$('#version-box [data-src-ver]').forEach((b) =>
+    b.addEventListener('click', () => openProvenance(parseInt(b.dataset.srcVer, 10), parseInt(b.dataset.srcSeg, 10), v)));
+}
+
+// ---------- 正文来源（按段、按已发布版本，逐次发布修订重放） ----------
+async function openProvenance(versionId, seg, backVersion = null) {
+  try {
+    const data = await api(`/api/versions/${versionId}/sources/${seg}`);
+    showProvenanceModal(data, backVersion);
   } catch (err) { toast(err.message, 'error'); }
+}
+
+function showProvenanceModal(data, backVersion = null) {
+  const rows = (data.fragments || []).map((f) => {
+    const initial = f.source === 'initial';
+    return `<tr>
+      <td class="src-range">[${f.start}, ${f.end})</td>
+      <td class="src-text src-${f.source}">${esc(f.text) || '<span class="muted">（空）</span>'}</td>
+      <td class="src-from">${initial
+        ? '<span class="tag tag-published">初始导入</span>'
+        : `<span class="tag tag-adopted">提议 #${f.proposalId} · v${f.versionId} 发布</span>`}</td>
+    </tr>`;
+  }).join('');
+  openModal(`
+      <div class="v-head">
+        <h3>正文来源：v${data.versionId} · 第 ${data.seg} 段</h3>
+        <div>
+          ${backVersion ? '<button class="btn small" id="src-back">← 返回版本</button>' : ''}
+          <button class="btn small" data-close>关闭</button>
+        </div>
+      </div>
+      <p class="muted">来源按逐次发布的修订逐码点重放：未被触及的文字保留原来源；替换或插入的文字归最后写入它的已发布提议；
+        删除不占结果；不按同文搜索猜测。区间为该版本第 ${data.seg} 段的 Unicode 码点半开区间 [start, end)，共 ${data.length} 个码点。</p>
+      <div class="src-legend">
+        <span class="tag tag-published">初始导入</span>
+        <span class="tag tag-adopted">已发布提议（编号·发布版本）</span>
+      </div>
+      <table class="src-table">
+        <thead><tr><th>码点区间</th><th>片段文字</th><th>来源</th></tr></thead>
+        <tbody>${rows || '<tr><td colspan="3" class="muted">该段为空。</td></tr>'}</tbody>
+      </table>`, true);
+  const back = $('#src-back');
+  if (back && backVersion) back.addEventListener('click', () => showVersionModal(backVersion));
 }
 
 // ---------- 发布 ----------

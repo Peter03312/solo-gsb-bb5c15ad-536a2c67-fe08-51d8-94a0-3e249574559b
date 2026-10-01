@@ -144,6 +144,16 @@ app.get('/api/versions/:id', requireAuth, wrap((req, res) => {
   res.json(store.versionView(db, parseInt(req.params.id, 10), req.user));
 }));
 
+// ---------- 正文来源（任一已发布版本·按段；保密段对参与者 403） ----------
+app.get('/api/versions/:id/sources/:seg', requireAuth, wrap((req, res) => {
+  res.json(store.provenanceView(
+    db,
+    parseInt(req.params.id, 10),
+    parseInt(req.params.seg, 10),
+    req.user
+  ));
+}));
+
 // ---------- 静态前端 ----------
 app.use(express.static(path.join(__dirname, '..', 'public')));
 

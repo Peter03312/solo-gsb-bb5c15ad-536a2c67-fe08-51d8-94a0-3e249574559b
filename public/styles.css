@@ -220,6 +220,31 @@ body {
   user-select: none;
 }
 .btn.tiny { padding: 1px 8px; font-size: 12px; }
+.src-toggle {
+  margin-left: 8px;
+  vertical-align: middle;
+}
+.src-legend {
+  display: flex;
+  gap: 8px;
+  align-items: center;
+  margin: 8px 0;
+}
+.src-table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 14px;
+}
+.src-table th, .src-table td {
+  border: 1px solid #d8dde6;
+  padding: 4px 8px;
+  vertical-align: top;
+  text-align: left;
+}
+.src-table th { background: #f2f5fa; }
+.src-range { white-space: nowrap; font-variant-numeric: tabular-nums; color: #555; }
+.src-text.src-initial { background: var(--publish-bg); }
+.src-text.src-proposal { background: var(--adopt-bg); font-weight: 600; }
 .secret-log-list { max-height: 52vh; overflow-y: auto; }
 
 /* 标记 */
